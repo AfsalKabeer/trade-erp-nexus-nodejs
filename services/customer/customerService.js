@@ -75,6 +75,8 @@ exports.createCustomer = async (data) => {
     creditLimit,
     paymentTerms,
     status,
+    trnNumber,
+    salesPerson, // <- ADDED
   } = data;
 
   // Validate paymentTerms early to avoid sequence allocation
@@ -85,7 +87,17 @@ exports.createCustomer = async (data) => {
       400
     );
   }
+const normalizedTrn = trnNumber
+    ? trnNumber.toString().trim().replace(/\s+/g, "")
+    : null;
 
+  if (normalizedTrn) {
+    // if you want stricter TRN format validation, do it here (e.g., regex)
+    const existingByTrn = await Customer.findOne({ trnNumber: normalizedTrn });
+    if (existingByTrn) {
+      throw new AppError("TRN already in use by another customer", 400);
+    }
+  }
   const session = await mongoose.startSession();
   session.startTransaction();
 
@@ -98,6 +110,9 @@ exports.createCustomer = async (data) => {
     const trimmedPhone = phone ? phone.toString().trim().replace(/\s+/g, "") : null;
     const trimmedContactPerson = contactPerson
       ? contactPerson.toString().trim().replace(/\s+/g, "")
+      : null;
+        const trimmedSalesPerson = salesPerson
+      ? salesPerson.toString().trim().replace(/\s+/g, "")
       : null;
 
     const customer = await Customer.create(
@@ -112,6 +127,8 @@ exports.createCustomer = async (data) => {
           shippingAddress,
           creditLimit: Number(creditLimit) || 0,
           paymentTerms: paymentTerms || "Net 30", // Use default if not provided
+          trnNumber: normalizedTrn, // <-- save normalized TRN
+          salesPerson: trimmedSalesPerson, // <-- ADDED
           status,
         },
       ],
@@ -138,6 +155,7 @@ exports.getAllCustomers = async (filters) => {
       { customerName: new RegExp(filters.search, "i") },
       { contactPerson: new RegExp(filters.search, "i") },
       { email: new RegExp(filters.search, "i") },
+       { trnNumber: new RegExp(filters.search, "i") }, // <-- include TRN in search
     ];
   }
 
@@ -167,14 +185,33 @@ exports.getCustomerByCustomerId = async (customerId) => {
   }
   return customer;
 };
-
-exports.updateCustomer = async (id, data) => {
+ exports.updateCustomer = async (id, data) => {
   const validPaymentTerms = ["Net 30", "Net 45", "Net 60", "Cash on Delivery", "Prepaid"];
   if (data.paymentTerms && !validPaymentTerms.includes(data.paymentTerms)) {
     throw new AppError(
       `Invalid paymentTerms. Must be one of: ${validPaymentTerms.join(", ")}`,
       400
     );
+  }
+if (data.trnNumber !== undefined) {
+    const normalizedTrn = data.trnNumber
+      ? data.trnNumber.toString().trim().replace(/\s+/g, "")
+      : null;
+
+    if (normalizedTrn) {
+      const existing = await Customer.findOne({ trnNumber: normalizedTrn, _id: { $ne: id } });
+      if (existing) {
+        throw new AppError("TRN already in use by another customer", 400);
+      }
+    }
+
+    data.trnNumber = normalizedTrn;
+  }
+    // Normalize salesPerson if present in payload
+  if (data.salesPerson !== undefined) {
+    data.salesPerson = data.salesPerson
+      ? data.salesPerson.toString().trim().replace(/\s+/g, "")
+      : null;
   }
 
   const customer = await Customer.findByIdAndUpdate(

@@ -18,6 +18,7 @@ router.post("/stock", StockController.createStock);
 router.get("/stock", StockController.getAllStock);
 router.get("/stock/stats", StockController.getStockStats);
 router.get("/stock/:id", StockController.getStockById);
+router.get("/stock/:id/current", StockController.getCurrentStockById);
 router.get("/stock/item/:itemId", StockController.getStockByItemId);
 router.put("/stock/:id", StockController.updateStock);
 router.patch("/stock/:id/quantity", StockController.updateStockQuantity);

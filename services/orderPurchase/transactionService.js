@@ -5,6 +5,26 @@ const InventoryMovement = require("../../models/modules/inventoryMovementModel")
 const StockService = require("../stock/stockService");
 const AppError = require("../../utils/AppError");
 const VATReport = require("../../models/modules/financial/VATReport"); // Import the new VATReport model
+const fs = require("fs");
+const path = require("path");
+
+function logInbound(tag, payload) {
+  try {
+    const logDir = path.join(__dirname, "..", "..", "..", "logs");
+    if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true });
+    const file = path.join(logDir, `transaction-inbound.log`);
+    const entry = {
+      ts: new Date().toISOString(),
+      tag,
+      id: payload?._id || payload?.id || null,
+      type: payload?.type || null,
+      docno: payload?.docno ?? null,
+      lpono: payload?.lpono ?? null,
+      discount: payload?.discount ?? null,
+    };
+    fs.appendFileSync(file, JSON.stringify(entry) + "\n", "utf8");
+  } catch (_) { /* ignore */ }
+}
 
 // ---------- Helpers ----------
 function generateTransactionNo(type) {
@@ -20,21 +40,33 @@ function generateTransactionNo(type) {
   return `${prefix}${sequence}`;
 }
 
-function calculateItems(items, code) {
+function calculateItems(items) {
   return items.map((item) => {
-    const lineValue = item.qty * item.price; // Use price as unit price
-    const vatAmount = (lineValue * (item.vatPercent || 0)) / 100; // Calculate VAT amount
-    const lineTotal = (lineValue + vatAmount).toFixed(2); // Total including VAT
-    const package = item.package;
+    // Use whichever unit price is present (price or rate), fallbacks to 0
+    const unitPrice = Number(item.price ?? item.rate ?? 0);
+    const qty = Number(item.qty ?? 0);
+    const lineValue = qty * unitPrice;
+    const vatPct = Number(item.vatPercent ?? 0);
+    const vatAmount = (lineValue * vatPct) / 100;
+    const lineTotal = +(lineValue + vatAmount).toFixed(2);
+
+    // Derive itemCode robustly from provided fields (backend may send different shapes)
+    const itemCode = item.itemCode || item.code || item.sku || (item.stockDetails && (item.stockDetails.itemCode || item.stockDetails.sku)) || (item.itemId ? String(item.itemId) : "");
+
+    // Ensure grandTotal is present to match frontend contract
+    const grandTotal = item.grandTotal != null ? Number(item.grandTotal) : lineTotal;
+
     return {
       ...item,
-      itemCode: code,
-      package,
-      vatAmount: +vatAmount.toFixed(2), // Store calculated vatAmount
-      lineTotal: +lineTotal, // Convert to number
+      itemCode,
+      package: item.package ?? 0,
+      vatAmount: +vatAmount.toFixed(2),
+      lineTotal,
+      grandTotal,
     };
   });
 }
+
 
 function withTransactionSession(fn) {
   return async (...args) => {
@@ -58,6 +90,8 @@ class TransactionService {
   // Create Transaction
   static createTransaction = withTransactionSession(
   async (data, createdBy, session) => {
+    // DEBUG inbound snapshot for create
+    try { logInbound("createTransaction:incoming", data); } catch(_) {}
     const {
       transactionNo,  // ADD: Destructure incoming transactionNo
       type,
@@ -72,6 +106,10 @@ class TransactionService {
       priority,
       status,  // ADD: Destructure incoming status
       totalAmount,  // ADD: Destructure incoming totalAmount
+      // Sales invoice specific fields
+      docno,
+      lpono,
+      discount,
     } = data;
 
     if (!type || !partyId || !partyType)
@@ -94,20 +132,16 @@ class TransactionService {
       }
     }
 
-    // Validate stock for sales orders & purchase returns
+    // Stock availability check disabled for order capture
+    // Previously validated for sales_order and purchase_return; now we only fetch to ensure item exists
     let code;
     for (const item of items) {
       const stock = await StockService.getStockByItemId(item.itemId);
-      code = stock.itemId;
-      if (
-        (type === "sales_order" || type === "purchase_return") &&
-        stock.currentStock < item.qty
-      ) {
-        throw new AppError(`Insufficient stock for ${item.description}`, 400);
-      }
+      code = stock?.itemId;
+      // Do not block order creation due to stock levels
     }
 
-    const processedItems = calculateItems(items, code);
+    const processedItems = calculateItems(items);
     const calculatedTotal = processedItems.reduce(
       (sum, i) => sum + i.lineTotal,
       0
@@ -133,6 +167,10 @@ class TransactionService {
       terms: terms || "",
       notes: notes || "",
       priority: priority || "Medium",
+      // Sales invoice specific fields
+      docno: docno || null,
+      lpono: lpono || null,
+      discount: Number(discount ?? 0),
     };
 
     console.log("Service: Final transactionData before save:", JSON.stringify(transactionData, null, 2));  // TEMP LOG
@@ -176,6 +214,8 @@ class TransactionService {
   // Update Transaction
   static updateTransaction = withTransactionSession(
     async (id, data, createdBy, session) => {
+      // DEBUG inbound snapshot for update
+      try { logInbound("updateTransaction:incoming", { id, ...data }); } catch(_) {}
       const transaction = await Transaction.findById(id).session(session);
       if (!transaction) throw new AppError("Transaction not found", 404);
       if (this.isProcessed(transaction.status))
@@ -183,7 +223,7 @@ class TransactionService {
 
       if (data.items) {
         // Recalculate items with updated data
-        data.items = calculateItems(data.items, transaction.items[0]?.itemCode);
+        data.items = calculateItems(data.items);
         data.totalAmount = data.items.reduce((sum, i) => sum + i.lineTotal, 0);
       }
 
@@ -567,6 +607,10 @@ static async getAllTransactions(filters) {
           expectedDispatch: { $first: "$expectedDispatch" },
           status: { $first: "$status" },
           totalAmount: { $first: "$totalAmount" },
+          // Ensure sales-order fields are included in list output
+          docno: { $first: "$docno" },
+          lpono: { $first: "$lpono" },
+          discount: { $first: "$discount" },
           paidAmount: { $first: "$paidAmount" },
           outstandingAmount: { $first: "$outstandingAmount" },
           items: { $push: "$items" },
@@ -643,9 +687,9 @@ static async getAllTransactions(filters) {
       const stock = await StockService.getStockByItemId(item.itemId);
       const quantityChange = this.getQuantityChange(type, item.qty);
       const newStock = stock.currentStock + quantityChange;
-      if (quantityChange < 0 && newStock < 0) {
-        throw new AppError(`Insufficient stock for ${item.description}`, 400);
-      }
+      // Allow approval even if sales order drives stock negative
+      // Previously: if (quantityChange < 0 && newStock < 0) throw error
+      // We now skip this blocking validation for sales orders
 
       let newPurchasePrice = stock.purchasePrice;
       // let price = item.rate; // Use rate as unit price

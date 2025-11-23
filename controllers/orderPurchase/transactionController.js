@@ -35,7 +35,6 @@ exports.getAllTransactions = catchAsync(async (req, res) => {
   const result = await TransactionService.getAllTransactions(req.query);
   sendPaginated(res, result);
 });
-
 // Get transaction by ID
 exports.getTransactionById = catchAsync(async (req, res) => {
   const transaction = await TransactionService.getTransactionById(

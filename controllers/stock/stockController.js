@@ -51,6 +51,29 @@ exports.getStockById = catchAsync(async (req, res) => {
   });
 });
 
+exports.getCurrentStockById = catchAsync(async (req, res) => {
+  const stock = await StockService.getStockById(req.params.id);
+
+  const response = {
+    id: stock._id,
+    itemId: stock.itemId,
+    itemCode: stock.sku || stock.itemId,
+    itemName: stock.itemName,
+    currentStock: stock.currentStock,
+    purchasePrice: stock.purchasePrice,
+    salesPrice: stock.salesPrice,
+    unitOfMeasure: stock.unitOfMeasure,
+    batchNumber: stock.batchNumber || null,
+    expiryDate: stock.expiryDate || null,
+    updatedAt: stock.updatedAt,
+  };
+
+  res.status(200).json({
+    status: "success",
+    data: response,
+  });
+});
+
 exports.getStockByItemId = catchAsync(async (req, res) => {
   const stock = await StockService.getStockByItemId(req.params.itemId);
 
