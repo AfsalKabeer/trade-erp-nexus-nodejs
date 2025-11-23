@@ -4,21 +4,30 @@ const itemSchema = new mongoose.Schema({
   itemId: {
     type: mongoose.Schema.Types.ObjectId,
     required: true,
-    refPath: "Stock",
+    ref: "Stock",
   },
   itemCode: { type: String, default: "" },
   description: { type: String, required: true, trim: true },
   qty: { type: Number, required: true, min: 0 },
-  rate: { type: Number, required: true, min: 0 },
-  rate: { type: Number, required: true, min: 0 },
+  price: { type: Number, default: 0, min: 0 },
+  currentPurchasePrice: { type: Number, default: 0, min: 0 },
+  rate: { type: Number, default: 0, min: 0 },
   package: { type: Number, default: 0 },
+  vatPercent: { type: Number, default: 0, min: 0 },
   vatAmount: { type: Number, default: 0, min: 0 },
   lineTotal: { type: Number, required: true, min: 0 },
+  grandTotal: { type: Number, default: 0, min: 0 },
+  brand: { type: String, default: null },
+  origin: { type: String, default: null },
   reason: { type: String, trim: true },
 });
 
 const transactionSchema = new mongoose.Schema({
   transactionNo: { type: String, unique: true, required: true, trim: true },
+  // Sales invoice specific fields
+  docno: { type: String, default: null, trim: true },
+  lpono: { type: String, default: null, trim: true },
+  discount: { type: Number, default: 0, min: 0 },
   type: {
     type: String,
     enum: ["purchase_order", "sales_order", "purchase_return", "sales_return"],
@@ -55,6 +64,8 @@ const transactionSchema = new mongoose.Schema({
   paidAmount: { type: Number, default: 0, min: 0 },
   outstandingAmount: { type: Number, default: 0, min: 0 },
   items: [itemSchema],
+  // Optional per-line discount support if frontend sends it
+  // Keeping header-level discount authoritative unless specified otherwise
   terms: { type: String, trim: true },
   notes: { type: String, trim: true },
   quoteRef: { type: String, trim: true },

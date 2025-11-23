@@ -1,7 +1,8 @@
 const mongoose = require("mongoose");
+const logger = require("./logger");
 
 const errorHandler = (err, req, res, next) => {
-  console.error("Error:", err);
+  logger.error("Error handler caught error", { name: err.name, message: err.message, code: err.code, stack: process.env.NODE_ENV === "production" ? undefined : err.stack });
 
   // Mongoose validation errors
   if (err instanceof mongoose.Error.ValidationError) {

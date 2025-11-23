@@ -6,6 +6,8 @@ const customerSchema = new mongoose.Schema({
   contactPerson: { type: String, required: true, trim: true },
   email: { type: String, match: /\S+@\S+\.\S+/, sparse: true, trim: true },
   phone: { type: String, sparse: true, trim: true },
+  trnNumber: { type: String, trim: true, default: null, sparse: true },
+  salesPerson: { type: String, trim: true, default: null, sparse: true },
   billingAddress: { type: String, default: null, trim: true },
   shippingAddress: { type: String, default: null, trim: true },
   creditLimit: { type: Number, default: 0, min: 0 },
@@ -43,6 +45,7 @@ customerSchema.pre(["updateOne", "findOneAndUpdate"], function (next) {
 // Indexes (removed _id index as it's implicit)
 customerSchema.index({ customerId: 1 }, { unique: true });
 customerSchema.index({ cashBalance: 1 }); // For FinancialService.adjustPartyCashBalance
+customerSchema.index({ trnNumber: 1 }, { sparse: true }); // ✅ Added TRN index
 customerSchema.index({ status: 1 }); // For filtering active customers
 customerSchema.index({ createdAt: -1 }); // For sorting by creation date
 
