@@ -10,6 +10,8 @@ const Transaction = require("../../models/modules/transactionModel");
 const Transactor = require("../../models/modules/financial/transactorModel");
 const AppError = require("../../utils/AppError");
 const mongoose = require("mongoose");
+const DebitLog = require("../../models/modules/DebitLog"); // ADD THIS
+const CreditLog = require("../../models/modules/CreditLog"); // ADD THIS
 
 class FinancialService {
   // Generate voucher number based on type
@@ -150,6 +152,7 @@ class FinancialService {
         // Create ledger entries only if approved
         if (newVoucher.status === "approved") {
           await this.createLedgerEntries(newVoucher, createdBy, session);
+          await this.createPaymentLogEntries(newVoucher, session);
         }
 
         await session.commitTransaction();
@@ -1193,6 +1196,62 @@ class FinancialService {
     }
   }
 
+ static async createPaymentLogEntries(voucher, session) {
+  const {
+    voucherType,
+    linkedInvoices = [],
+    partyId,
+    partyType,
+    voucherNo,
+    _id: voucherId,
+    date,
+    createdBy,
+  } = voucher;
+
+  if (linkedInvoices.length === 0) return;
+
+  const isPayment = voucherType === "payment";
+  const isReceipt = voucherType === "receipt";
+  if (!isPayment && !isReceipt) return;
+
+  const LogModel = isPayment ? DebitLog : CreditLog;
+  const partyField = isPayment ? "vendorId" : "customerId";
+  const logType = isPayment ? "payment_received" : "payment_made";
+
+  // POPULATE invoiceId to get transactionNo
+  const populatedInvoices = await Voucher.populate(voucher, {
+    path: "linkedInvoices.invoiceId",
+    select: "transactionNo totalAmount",
+    model: "Transaction",
+  });
+
+  const logs = [];
+
+  for (const link of populatedInvoices.linkedInvoices) {
+    const { invoiceId, allocatedAmount, previousBalance, newBalance } = link;
+
+    // Now invoiceId is populated → we can safely access transactionNo
+    const invNo = invoiceId?.transactionNo || invoiceId.toString();
+
+    logs.push({
+      [partyField]: partyId,
+      type: logType,
+      date: date || new Date(),
+      invNo,
+      amount: -allocatedAmount,           // Tally style: payment reduces balance
+      paid: allocatedAmount,
+      balance: newBalance,
+      ref: voucherNo,
+      status: newBalance <= 0 ? "PAID" : "PARTIAL",
+      createdBy,
+    });
+  }
+
+  if (logs.length > 0) {
+    await LogModel.insertMany(logs, { session });
+  }
+}
+
   // Update account balances after posting - Parallel updates
   static async updateAccountBalances(entries, session) {
     const updatePromises = entries.map(async (entry) => {
@@ -1689,6 +1748,7 @@ class FinancialService {
           if (!existingEntries) {
             await this.createLedgerEntries(voucher, approvedBy, session);
           }
+          await this.createPaymentLogEntries(voucher, session);
         }
 
         await session.commitTransaction();
@@ -1732,7 +1792,10 @@ class FinancialService {
         if (voucher.status === "approved") {
           await this.reverseLedgerEntries(id, session);
           await this.reverseAllocations(voucher, session);
-
+          // ADD: Reverse DebitLog/CreditLog entries
+          const LogModel =
+            voucher.partyType === "Vendor" ? DebitLog : CreditLog;
+          await LogModel.deleteMany({ ref: voucher.voucherNo }, { session });
           // Reverse cashBalance adjustment
           if (voucher.partyType && voucher.onAccountAmount > 0) {
             await this.adjustPartyCashBalance(

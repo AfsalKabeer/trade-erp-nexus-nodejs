@@ -19,7 +19,7 @@ const accountRouter = require("./routes/financial/accountRouter");
 const transactorRouter = require("./routes/financial/transactorRoutes");
 const expenseTypeRouter = require("./routes/financial/expenseType");
 const reportsRoutesr= require("./routes/reports/vatReportRoutes")
-
+const ledgerRoutesr= require("./routes/ledgerRoutes")
 dotenv.config();
 
 const app = express();
@@ -73,7 +73,7 @@ app.use("/api/v1/account", accountRouter);
 app.use("/api/v1/account-v2", transactorRouter);
 app.use("/api/v1/expense", expenseTypeRouter);
 app.use("/api/v1/reports", reportsRoutesr);
-
+app.use("/api/v1/ledger", ledgerRoutesr);
 // Health check endpoint
 app.get("/api/v1/health", (req, res) => {
   res.json({
