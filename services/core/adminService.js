@@ -306,16 +306,18 @@ const deleteAdmin = async (adminId, deletedBy = null) => {
 
 // Refresh access token
 const refreshAccessToken = async (refreshToken) => {
-  if (!refreshToken)
+  if (!refreshToken) {
     throw new AppError(
       "Refresh token is required",
       400,
       "MISSING_REFRESH_TOKEN"
     );
+  }
 
   const decoded = verifyToken(refreshToken);
-  if (decoded.type !== "refresh")
+  if (decoded.type !== "refresh") {
     throw new AppError("Invalid token type", 401, "INVALID_TOKEN_TYPE");
+  }
 
   const admin = await Admin.findById(decoded.id);
   if (!admin || !admin.isActive || admin.status !== "active")

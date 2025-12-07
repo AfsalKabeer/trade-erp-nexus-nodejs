@@ -13,13 +13,19 @@ const uomRouter = require("./routes/unit/uomRouter");
 const transactionRouter = require("./routes/orderPurchase/transactionRouter");
 const inventoryRouter = require("./routes/stock/inventoryMovementRoutes");
 const categoryRouter = require("./routes/stock/categoryRouter");
+const sequenceRouter = require("./routes/sequence/sequenceRouter");
 const staffRoutes = require("./routes/staff/staffRoutes");
 const financialRouter = require("./routes/financial/financialRoutes");
 const accountRouter = require("./routes/financial/accountRouter");
 const transactorRouter = require("./routes/financial/transactorRoutes");
 const expenseTypeRouter = require("./routes/financial/expenseType");
 const reportsRoutesr= require("./routes/reports/vatReportRoutes")
+<<<<<<< Updated upstream
 const ledgerRoutesr= require("./routes/ledgerRoutes")
+=======
+const orderRouter = require("./routes/order/orderRouter");
+
+>>>>>>> Stashed changes
 dotenv.config();
 
 const app = express();
@@ -65,6 +71,8 @@ app.use("/api/v1/customers", customerRouter);
 app.use("/api/v1/stock", stockRouter);
 app.use("/api/v1/uom", uomRouter);
 app.use("/api/v1/transactions", transactionRouter);
+app.use("/api/v1/sequence", sequenceRouter);
+app.use("/api/v1/order", orderRouter);
 app.use("/api/v1/inventory", inventoryRouter);
 app.use("/api/v1/categories", categoryRouter);
 app.use("/api/v1/staff", staffRoutes);

@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Customer = require("../../models/modules/customerModel");
 const AppError = require("../../utils/AppError");
 const Sequence = require("../../models/modules/sequenceModel");
+const logger = require("../../utils/logger");
 
 // Helper to get the next sequence number without saving it
 const getNextSequenceNumber = async (year, type, session) => {
@@ -20,11 +21,36 @@ const getNextSequenceNumber = async (year, type, session) => {
       throw new AppError("Failed to initialize sequence document", 500);
     }
 
-    if (sequence.deletedNumbers && sequence.deletedNumbers.length > 0) {
-      return Math.min(...sequence.deletedNumbers);
+    const usedNumbers = Array.isArray(sequence.usedNumbers)
+      ? sequence.usedNumbers
+      : [];
+    const deletedNumbers = Array.isArray(sequence.deletedNumbers)
+      ? sequence.deletedNumbers
+      : [];
+
+    if (deletedNumbers.length > 0) {
+      return Math.min(...deletedNumbers);
     }
 
-    return sequence.usedNumbers.length > 0 ? Math.max(...sequence.usedNumbers) + 1 : 1;
+    if (usedNumbers.length > 0) {
+      return Math.max(...usedNumbers) + 1;
+    }
+
+    // Fallback: derive next number from existing customers if arrays are empty
+    const prefix = `CUST${year}`;
+    const existing = await Customer.find({ customerId: new RegExp(`^${prefix}\\d{3}$`) })
+      .select('customerId')
+      .lean()
+      .session(session);
+    if (existing && existing.length > 0) {
+      const maxSuffix = existing
+        .map(c => parseInt(c.customerId.slice(prefix.length), 10))
+        .filter(n => !isNaN(n))
+        .reduce((a, b) => Math.max(a, b), 0);
+      return maxSuffix + 1;
+    }
+
+    return 1;
   } catch (error) {
     throw new AppError(`Sequence number generation failed: ${error.message}`, 500);
   }
@@ -107,6 +133,12 @@ const normalizedTrn = trnNumber
     const formattedNumber = sequenceNumber.toString().padStart(3, "0"); // Ensure 3 digits
     const newCustomerId = `CUST${currentYear}${formattedNumber}`;
 
+    logger.info("Customer creation: sequence allocated", {
+      year: currentYear,
+      sequenceNumber,
+      customerId: newCustomerId,
+    });
+
     const trimmedPhone = phone ? phone.toString().trim().replace(/\s+/g, "") : null;
     const trimmedContactPerson = contactPerson
       ? contactPerson.toString().trim().replace(/\s+/g, "")
@@ -115,7 +147,19 @@ const normalizedTrn = trnNumber
       ? salesPerson.toString().trim().replace(/\s+/g, "")
       : null;
 
-    const customer = await Customer.create(
+    logger.debug("Customer creation: payload prepared", {
+      customerId: newCustomerId,
+      customerName,
+      contactPerson: trimmedContactPerson,
+      email,
+      phone: trimmedPhone,
+      paymentTerms: paymentTerms || "Net 30",
+      trnNumber: normalizedTrn,
+      salesPerson: trimmedSalesPerson,
+      status,
+    });
+
+    const [customer] = await Customer.create(
       [
         {
           customerId: newCustomerId,
@@ -133,13 +177,26 @@ const normalizedTrn = trnNumber
         },
       ],
       { session }
-    )[0];
+    );
 
     await commitSequenceNumber(currentYear, "customer", sequenceNumber, session);
     await session.commitTransaction();
+
+    logger.info("Customer creation: success", {
+      customerId: customer.customerId,
+      _id: customer._id,
+      status: customer.status,
+    });
     return customer;
   } catch (error) {
-    await session.abortTransaction();
+    try {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+    } catch (abortErr) {
+      logger.warn("Customer creation: abort failed or not needed", { message: abortErr.message });
+    }
+    logger.error("Customer creation: failed", { message: error.message, stack: error.stack });
     throw error;
   } finally {
     session.endSession();

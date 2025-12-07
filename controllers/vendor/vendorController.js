@@ -1,8 +1,32 @@
 const VendorService = require("../../services/vendor/vendorService");
 const catchAsync = require("../../utils/catchAsync");
+const logger = require("../../utils/logger");
 
 exports.createVendor = catchAsync(async (req, res) => {
+  const childLogger = logger.child({ route: "POST /api/v1/vendors" });
+  childLogger.info("API call: Create Vendor", {
+    method: req.method,
+    url: req.originalUrl,
+    query: req.query,
+    payloadSummary: {
+      vendorName: req.body?.vendorName,
+      contactPerson: req.body?.contactPerson,
+      email: req.body?.email,
+      phone: req.body?.phone,
+      paymentTerms: req.body?.paymentTerms,
+      status: req.body?.status,
+      trnNO: req.body?.trnNO,
+    },
+  });
+
   const vendor = await VendorService.createVendor(req.body);
+
+  childLogger.info("API response: Vendor created", {
+    vendorId: vendor.vendorId,
+    _id: vendor._id,
+    status: vendor.status,
+  });
+
   res.status(201).json({ success: true, data: vendor });
 });
 

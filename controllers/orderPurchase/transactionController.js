@@ -1,6 +1,7 @@
 const TransactionService = require("../../services/orderPurchase/transactionService");
 const catchAsync = require("../../utils/catchAsync");
 const AppError = require("../../utils/AppError");
+const logger = require("../../utils/logger");
 
 // Helper to resolve createdBy consistently
 const resolveCreatedBy = (req) =>
@@ -20,14 +21,31 @@ const sendPaginated = (res, result) => {
 
 // Create new transaction
 exports.createTransaction = catchAsync(async (req, res) => {
-   console.log("Received data for CREATE (req.body):", JSON.stringify(req.body, null, 2));
-  const transaction = await TransactionService.createTransaction(
-    req.body,
-    resolveCreatedBy(req)
-  );
-  console.log("Created transaction:", JSON.stringify(transaction, null, 2));
-  res.status(201).json({ status: "success", data: transaction });
- 
+  console.log("╔═══════════════════════════════════════════════════════╗");
+  console.log("║  [CONTROLLER] Create Transaction Request              ║");
+  console.log("╚═══════════════════════════════════════════════════════╝");
+  console.log("Request body:", JSON.stringify(req.body, null, 2));
+  console.log("Created by:", resolveCreatedBy(req));
+  
+  try {
+    const transaction = await TransactionService.createTransaction(
+      req.body,
+      resolveCreatedBy(req)
+    );
+    console.log("╔═══════════════════════════════════════════════════════╗");
+    console.log("║  [CONTROLLER] ✓ Transaction Created Successfully      ║");
+    console.log("╚═══════════════════════════════════════════════════════╝");
+    console.log("Transaction ID:", transaction._id);
+    res.status(201).json({ status: "success", data: transaction });
+  } catch (error) {
+    console.error("╔═══════════════════════════════════════════════════════╗");
+    console.error("║  [CONTROLLER] ❌ Transaction Creation Failed          ║");
+    console.error("╚═══════════════════════════════════════════════════════╝");
+    console.error("Error:", error.message);
+    console.error("Error code:", error.code);
+    console.error("Status code:", error.statusCode);
+    throw error; // Re-throw to be handled by catchAsync and error handler
+  }
 });
 
 // Get all transactions
@@ -73,13 +91,29 @@ exports.processTransaction = catchAsync(async (req, res) => {
       "Invalid action. Use 'approve', 'reject', or 'cancel'",
       400
     );
-
-  const transaction = await TransactionService.processTransaction(
-    req.params.id,
-    action,
-    resolveCreatedBy(req)
-  );
-  res.status(200).json({ status: "success", data: { transaction } });
+  const log = logger.child({ route: "processTransaction", id: req.params.id, action });
+  log.info("Inbound request body:", req.body);
+  let transaction;
+  try {
+    transaction = await TransactionService.processTransaction(
+      req.params.id,
+      action,
+      resolveCreatedBy(req)
+    );
+    log.info("Approval processed. Resulting transaction snapshot:", {
+      _id: transaction._id,
+      type: transaction.type,
+      status: transaction.status,
+      numberManual: transaction.numberManual,
+      orderNumber: transaction.orderNumber,
+      invoiceNumber: transaction.invoiceNumber,
+      transactionNo: transaction.transactionNo,
+    });
+    res.status(200).json({ status: "success", data: { transaction } });
+  } catch (err) {
+    log.error("Approval failed", { message: err.message, code: err.code, statusCode: err.statusCode });
+    throw err;
+  }
 });
 
 // Get transaction with inventory movements
@@ -261,4 +295,16 @@ exports.reopenTransaction = catchAsync(async (req, res) => {
     resolveCreatedBy(req)
   );
   res.status(200).json({ status: "success", data: { transaction } });
+});
+
+// Get next number for a transaction type (sales_order, purchase_order, etc.)
+exports.getNextNumber = catchAsync(async (req, res) => {
+  const { type } = req.query;
+  if (!type) throw new AppError("Transaction type (type) is required", 400);
+  if (!['sales_order', 'purchase_order', 'purchase_return', 'sales_return'].includes(type))
+    throw new AppError("Invalid transaction type", 400);
+
+  const preview = String(req.query.preview || '').toLowerCase() === 'true';
+  const next = await TransactionService.getNextTransactionNumber(type, preview);
+  res.status(200).json({ success: true, data: { next } });
 });

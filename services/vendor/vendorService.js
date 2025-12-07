@@ -2,6 +2,7 @@ const mongoose = require("mongoose");
 const Vendor = require("../../models/modules/vendorModel");
 const AppError = require("../../utils/AppError");
 const Sequence = require("../../models/modules/sequenceModel");
+const logger = require("../../utils/logger");
 
 // Helper to get the next sequence number without saving it
 const getNextSequenceNumber = async (year, type, session) => {
@@ -20,13 +21,36 @@ const getNextSequenceNumber = async (year, type, session) => {
       throw new AppError("Failed to initialize sequence document", 500);
     }
 
-    if (sequence.deletedNumbers && sequence.deletedNumbers.length > 0) {
-      return Math.min(...sequence.deletedNumbers);
+    const usedNumbers = Array.isArray(sequence.usedNumbers)
+      ? sequence.usedNumbers
+      : [];
+    const deletedNumbers = Array.isArray(sequence.deletedNumbers)
+      ? sequence.deletedNumbers
+      : [];
+
+    if (deletedNumbers.length > 0) {
+      return Math.min(...deletedNumbers);
     }
 
-    return sequence.usedNumbers.length > 0
-      ? Math.max(...sequence.usedNumbers) + 1
-      : 1;
+    if (usedNumbers.length > 0) {
+      return Math.max(...usedNumbers) + 1;
+    }
+
+    // Fallback: derive next number from existing vendors if arrays are empty
+    const prefix = `VEND${year}`;
+    const existing = await Vendor.find({ vendorId: new RegExp(`^${prefix}\\d{3}$`) })
+      .select('vendorId')
+      .lean()
+      .session(session);
+    if (existing && existing.length > 0) {
+      const maxSuffix = existing
+        .map(v => parseInt(v.vendorId.slice(prefix.length), 10))
+        .filter(n => !isNaN(n))
+        .reduce((a, b) => Math.max(a, b), 0);
+      return maxSuffix + 1;
+    }
+
+    return 1;
   } catch (error) {
     throw new AppError(
       `Sequence number generation failed: ${error.message}`,
@@ -116,6 +140,12 @@ exports.createVendor = async (data) => {
     const formattedNumber = sequenceNumber.toString().padStart(3, "0"); // Ensure 3 digits
     const newVendorId = `VEND${currentYear}${formattedNumber}`;
 
+    logger.info("Vendor creation: sequence allocated", {
+      year: currentYear,
+      sequenceNumber,
+      vendorId: newVendorId,
+    });
+
     const trimmedPhone = phone
       ? phone.toString().trim().replace(/\s+/g, "")
       : null;
@@ -123,7 +153,18 @@ exports.createVendor = async (data) => {
       ? contactPerson.toString().trim().replace(/\s+/g, "")
       : null;
 
-    const vendor = await Vendor.create(
+    logger.debug("Vendor creation: payload prepared", {
+      vendorId: newVendorId,
+      vendorName,
+      contactPerson: trimmedContactPerson,
+      email,
+      phone: trimmedPhone,
+      paymentTerms: paymentTerms || "30 days",
+      trnNO,
+      status,
+    });
+
+    const [vendor] = await Vendor.create(
       [
         {
           vendorId: newVendorId,
@@ -138,13 +179,26 @@ exports.createVendor = async (data) => {
         },
       ],
       { session }
-    )[0];
+    );
 
     await commitSequenceNumber(currentYear, "vendor", sequenceNumber, session);
     await session.commitTransaction();
+
+    logger.info("Vendor creation: success", {
+      vendorId: vendor.vendorId,
+      _id: vendor._id,
+      status: vendor.status,
+    });
     return vendor;
   } catch (error) {
-    await session.abortTransaction();
+    try {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+    } catch (abortErr) {
+      logger.warn("Vendor creation: abort failed or not needed", { message: abortErr.message });
+    }
+    logger.error("Vendor creation: failed", { message: error.message, stack: error.stack });
     throw error;
   } finally {
     session.endSession();
@@ -208,7 +262,13 @@ exports.deleteVendor = async (id) => {
     await releaseSequenceNumber(vendor.vendorId, session);
     await session.commitTransaction();
   } catch (error) {
-    await session.abortTransaction();
+    try {
+      if (session.inTransaction()) {
+        await session.abortTransaction();
+      }
+    } catch (abortErr) {
+      logger.warn("Vendor deletion: abort failed or not needed", { message: abortErr.message });
+    }
     throw error;
   } finally {
     session.endSession();

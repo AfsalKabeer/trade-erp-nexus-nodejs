@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "nodemon server.js"
+    "start": "nodemon server.js",
+    "test": "jest --runInBand"
   },
   "keywords": [],
   "author": "",
@@ -22,5 +23,9 @@
     "multer-storage-cloudinary": "^4.0.0",
     "nodemon": "^3.1.10",
     "path-to-regexp": "^1.8.0"
+  }
+  ,
+  "devDependencies": {
+    "jest": "^29.6.1"
   }
 }

@@ -2,7 +2,16 @@ const mongoose = require("mongoose");
 const logger = require("./logger");
 
 const errorHandler = (err, req, res, next) => {
-  logger.error("Error handler caught error", { name: err.name, message: err.message, code: err.code, stack: process.env.NODE_ENV === "production" ? undefined : err.stack });
+  // Only log non-operational errors and 500 level errors in production
+  const shouldLog = !err.isOperational || err.statusCode >= 500;
+  if (shouldLog) {
+    logger.error("Error handler caught error", { 
+      name: err.name, 
+      message: err.message, 
+      code: err.code, 
+      stack: process.env.NODE_ENV === "production" ? undefined : err.stack 
+    });
+  }
 
   // Mongoose validation errors
   if (err instanceof mongoose.Error.ValidationError) {
@@ -24,16 +33,6 @@ const errorHandler = (err, req, res, next) => {
     });
   }
 
-  // Custom AppError
-  if (err.isOperational) {
-    return res.status(err.statusCode || 400).json({
-      success: false,
-      message: err.message,
-      errorCode: err.code || "APP_ERROR",
-      details: err.details || null,
-    });
-  }
-
   // JWT errors (optional)
   if (err.name === "JsonWebTokenError") {
     return res.status(401).json({
@@ -48,6 +47,16 @@ const errorHandler = (err, req, res, next) => {
       success: false,
       message: "Token has expired",
       errorCode: "TOKEN_EXPIRED",
+    });
+  }
+
+  // Custom AppError
+  if (err.isOperational) {
+    return res.status(err.statusCode || 400).json({
+      success: false,
+      message: err.message,
+      errorCode: err.code || "APP_ERROR",
+      details: err.details || null,
     });
   }
 

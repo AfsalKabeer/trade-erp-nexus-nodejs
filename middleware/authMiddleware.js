@@ -11,7 +11,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Access token is required",
-        error: "MISSING_TOKEN",
+        errorCode: "MISSING_TOKEN",
       });
     }
 
@@ -22,7 +22,7 @@ const authenticateToken = async (req, res, next) => {
       return res.status(401).json({
         success: false,
         message: "Admin not found or inactive",
-        error: "ADMIN_INACTIVE",
+        errorCode: "ADMIN_INACTIVE",
       });
     }
 
@@ -36,11 +36,14 @@ const authenticateToken = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error("Authentication error:", error);
+    // Only log unexpected errors, not authentication failures
+    if (error.isOperational !== true && error.name !== "JsonWebTokenError" && error.name !== "TokenExpiredError") {
+      console.error("Authentication error:", error);
+    }
     return res.status(401).json({
       success: false,
-      message: "Invalid token",
-      error: error.message,
+      message: error.message || "Authentication failed",
+      errorCode: error.code || "AUTH_ERROR",
     });
   }
 };
@@ -65,8 +68,7 @@ const optionalAuth = async (req, res, next) => {
           };
         }
       } catch (tokenError) {
-        // Ignore token errors here
-        console.warn("Optional auth token error:", tokenError.message);
+        // Silently ignore token errors for optional auth
       }
     }
     next();

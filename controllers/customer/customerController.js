@@ -1,12 +1,38 @@
 const CustomerService = require("../../services/customer/customerService");
 const catchAsync = require("../../utils/catchAsync");
+const logger = require("../../utils/logger");
 
 exports.createCustomer = catchAsync(async (req, res) => {
+  const childLogger = logger.child({ route: "POST /api/v1/customers" });
+  childLogger.info("API call: Create Customer", {
+    method: req.method,
+    url: req.originalUrl,
+    query: req.query,
+    // Log a safe summary of payload
+    payloadSummary: {
+      customerName: req.body?.customerName,
+      contactPerson: req.body?.contactPerson,
+      email: req.body?.email,
+      phone: req.body?.phone,
+      paymentTerms: req.body?.paymentTerms,
+      status: req.body?.status,
+      trnNumber: req.body?.trnNumber,
+      salesPerson: req.body?.salesPerson,
+    },
+  });
+
   const customer = await CustomerService.createCustomer(req.body);
-  res.status(201).json({ 
-    success: true, 
+
+  childLogger.info("API response: Customer created", {
+    customerId: customer.customerId,
+    _id: customer._id,
+    status: customer.status,
+  });
+
+  res.status(201).json({
+    success: true,
     message: "Customer created successfully",
-    data: customer 
+    data: customer,
   });
 });
 

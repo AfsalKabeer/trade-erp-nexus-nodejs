@@ -20,6 +20,11 @@ router.get(
 
 router.get("/customers", CustomerController.getAllCustomers);
 router.post("/", CustomerController.createCustomer);
+// Aliases to support clients mistakenly calling /customers/customers
+router.get("/customers", CustomerController.getAllCustomers); // already correct
+router.post("/customers", CustomerController.createCustomer);
+router.put("/customers/:id", CustomerController.updateCustomer);
+router.delete("/customers/:id", CustomerController.deleteCustomer);
 
 router.get("/:id", CustomerController.getCustomerById);
 router.put("/:id", CustomerController.updateCustomer);

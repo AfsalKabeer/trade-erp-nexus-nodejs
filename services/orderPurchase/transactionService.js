@@ -5,10 +5,15 @@ const InventoryMovement = require("../../models/modules/inventoryMovementModel")
 const StockService = require("../stock/stockService");
 const AppError = require("../../utils/AppError");
 const VATReport = require("../../models/modules/financial/VATReport"); // Import the new VATReport model
+const Sequence = require("../../models/modules/sequenceModel");
 const fs = require("fs");
 const path = require("path");
+<<<<<<< Updated upstream
 const DebitLog = require("../../models/modules/DebitLog");
 const CreditLog = require("../../models/modules/CreditLog");
+=======
+const logger = require("../../utils/logger");
+>>>>>>> Stashed changes
 
 function logInbound(tag, payload) {
   try {
@@ -31,17 +36,68 @@ function logInbound(tag, payload) {
 }
 
 // ---------- Helpers ----------
-function generateTransactionNo(type) {
-  const prefix = {
-    purchase_order: "PO",
-    sales_order: "SO",
-    purchase_return: "PR",
-    sales_return: "SR",
+async function getNextOrderNumber(type) {
+  const map = {
+    purchase_order: { seqType: "purchase_order", prefix: "PO" },
+    sales_order: { seqType: "sales_order", prefix: "SO" },
   }[type];
+  if (!map) throw new AppError(`Sequence not configured for type ${type}`, 400);
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const yyyymm = `${y}${m}`;
+  // Prefix includes year-month and a separator to match contract: PREFIXYYYYMM-NNNNN
+  const prefix = `${map.prefix}${yyyymm}-`;
+  return Sequence.getNext(map.seqType, { year: String(y), prefix, padding: 5 });
+}
 
-  const dateStr = new Date().toISOString().slice(0, 10).replace(/-/g, "");
-  const sequence = String(Math.floor(Math.random() * 999) + 1).padStart(3, "0");
-  return `${prefix}${sequence}`;
+// In case sequence counter lags existing data, retry until we find an unused number
+async function getUniqueOrderNumber(type, session) {
+  const maxRetries = 10;
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    const candidate = await getNextOrderNumber(type);
+    const exists = await Transaction.findOne({
+      $or: [{ orderNumber: candidate }, { transactionNo: candidate }],
+    })
+      .session?.(session) || Transaction.findOne({
+      $or: [{ orderNumber: candidate }, { transactionNo: candidate }],
+    });
+    const doc = (await exists) || null;
+    if (!doc) return candidate;
+  }
+          orderNumber: { $first: "$orderNumber" }
+  throw new AppError("Unable to allocate unique order number after retries", 500);
+}
+
+async function getNextInvoiceNumber(type, opts = {}) {
+  const now = new Date();
+  const y = now.getFullYear();
+  const m = String(now.getMonth() + 1).padStart(2, "0");
+  const yyyymm = `${y}${m}`;
+
+  if (type === "sales_order") {
+    // Preferred: derive NNNNN from SOYYYYMM-NNNNN; fallback to global 5-digit counter
+    const { orderNumber } = opts || {};
+    if (orderNumber) {
+      const match = /-(\d{5})$/.exec(orderNumber);
+      if (!match) {
+        throw new AppError(`Invalid sales order number format: ${orderNumber}`, 400);
+      }
+      return match[1];
+    }
+    // Fallback for tests or direct calls: use a global 5-digit counter without prefix/date
+    return Sequence.getNext("sales_invoice", { year: String(y), prefix: "", padding: 5 });
+  }
+
+  // Purchase invoices, returns, etc. use YYYYMM format
+  const map = {
+    purchase_order: { seqType: "purchase_invoice", prefix: "PI" },
+    purchase_return: { seqType: "purchase_return", prefix: "PR" },
+    sales_return: { seqType: "sales_return", prefix: "SR" },
+  }[type];
+  if (!map) throw new AppError(`Sequence not configured for invoice type ${type}`, 400);
+  const prefix = `${map.prefix}${yyyymm}-`;
+  return Sequence.getNext(map.seqType, { year: String(y), prefix, padding: 5 });
 }
 
 function calculateItems(items) {
@@ -99,6 +155,7 @@ function withTransactionSession(fn) {
 class TransactionService {
   // Create Transaction
   static createTransaction = withTransactionSession(
+<<<<<<< Updated upstream
     async (data, createdBy, session) => {
       // DEBUG inbound snapshot for create
       try {
@@ -107,6 +164,198 @@ class TransactionService {
       const {
         transactionNo, // ADD: Destructure incoming transactionNo
         type,
+=======
+  async (data, createdBy, session) => {
+    console.log("═══════════════════════════════════════════════════════");
+    console.log("[CREATE TRANSACTION] Starting validation");
+    console.log("Received data keys:", Object.keys(data));
+    console.log("Full data:", JSON.stringify(data, null, 2));
+    console.log("═══════════════════════════════════════════════════════");
+
+    // Destructure numberManual flag (default false = auto)
+    const {
+      transactionNo,
+      orderNumber,
+      type,
+      partyId,
+      partyType,
+      vendorReference,
+      items,
+      date,
+      deliveryDate,
+      terms,
+      notes,
+      priority,
+      status,
+      totalAmount,
+      // Sales invoice specific fields
+      docno,
+      lpono,
+      // Accept alternate casing/aliases from frontend
+      docNo,
+      lpoNo,
+      refNo,
+      discount,
+      numberManual = false,  // NEW: respect manual flag
+    } = data;
+
+    // Detailed validation logging
+    console.log("[VALIDATION] Checking required fields:");
+    console.log(`  - type: ${type} ${!type ? '❌ MISSING' : '✓'}`);
+    console.log(`  - partyId: ${partyId} ${!partyId ? '❌ MISSING' : '✓'}`);
+    console.log(`  - partyType: ${partyType} ${!partyType ? '❌ MISSING' : '✓'}`);
+    console.log(`  - items: ${items ? `Array[${items.length}]` : 'undefined'} ${!items?.length ? '❌ MISSING/EMPTY' : '✓'}`);
+
+    if (!type || !partyId || !partyType) {
+      const missing = [];
+      if (!type) missing.push('type');
+      if (!partyId) missing.push('partyId');
+      if (!partyType) missing.push('partyType');
+      console.error(`[VALIDATION FAILED] Missing required fields: ${missing.join(', ')}`);
+      throw new AppError(`Missing required fields: ${missing.join(', ')}`, 400);
+    }
+    if (!items?.length) {
+      console.error("[VALIDATION FAILED] Items are required or empty");
+      throw new AppError("Items are required", 400);
+    }
+
+    console.log(`[SEQUENCE] Creating order type=${type}, numberManual=${numberManual}, orderNumber=${orderNumber}, transactionNo=${transactionNo}`);
+
+    // Determine orderNumber and transactionNo behavior
+    let finalOrderNumber = orderNumber?.trim() || null;
+    let finalTransactionNo = transactionNo?.trim() || null;
+
+    if (type === "sales_order") {
+      if (numberManual) {
+        // MANUAL: user provided orderNumber; accept it as-is, do NOT update sequence
+        if (!finalOrderNumber) throw new AppError("orderNumber required for manual sales order", 400);
+        console.log(`[SEQUENCE] Manual SO: accepted orderNumber=${finalOrderNumber}, no sequence increment`);
+      } else {
+        // AUTO: always generate a new order number and increment sequence
+        // Ignore any incoming preview value so the counter is updated reliably
+        finalOrderNumber = await getUniqueOrderNumber(type, session);
+        console.log(`[SEQUENCE] Auto SO: generated orderNumber=${finalOrderNumber} (sequence incremented)`);
+      }
+      // DRAFT sales orders: keep transactionNo null to avoid frontend conflicts
+      finalTransactionNo = null;
+    } else if (type === "purchase_order") {
+      // Purchase orders: generate transactionNo and use it for orderNumber too
+      if (numberManual) {
+        // MANUAL: accept transactionNo, do NOT update sequence
+        if (!finalTransactionNo) throw new AppError("transactionNo required for manual purchase order", 400);
+        console.log(`[SEQUENCE] Manual PO: accepted transactionNo=${finalTransactionNo}, no sequence increment`);
+      } else {
+        // AUTO: always generate a new transaction number and increment sequence
+        // Ignore any incoming preview value so the counter is updated reliably
+        finalTransactionNo = await getUniqueOrderNumber(type, session);
+        console.log(`[SEQUENCE] Auto PO: generated transactionNo=${finalTransactionNo} (sequence incremented)`);
+      }
+      // Set orderNumber to same as transactionNo for purchase orders
+      finalOrderNumber = finalTransactionNo;
+      console.log(`[SEQUENCE] PO: orderNumber set to transactionNo=${finalOrderNumber}`);
+    }
+
+    // For non-manual entries or uniqueness check: ensure provided numbers are unique
+    if (finalTransactionNo && finalTransactionNo !== "0000") {
+      const existing = await Transaction.findOne({ transactionNo: finalTransactionNo }).session(session);
+      if (existing) throw new AppError(`Transaction number ${finalTransactionNo} already exists`, 400);
+    }
+
+    // Stock availability check disabled for order capture
+    // Previously validated for sales_order and purchase_return; now we only fetch to ensure item exists
+    console.log("[ITEMS VALIDATION] Checking items...");
+    let code;
+    for (let i = 0; i < items.length; i++) {
+      const item = items[i];
+      console.log(`  Item ${i + 1}:`, {
+        itemId: item.itemId,
+        description: item.description,
+        qty: item.qty,
+        price: item.price,
+        rate: item.rate,
+      });
+      
+      if (!item.itemId) {
+        console.error(`[ITEMS VALIDATION FAILED] Item ${i + 1} missing itemId`);
+        throw new AppError(`Item ${i + 1} is missing itemId`, 400);
+      }
+      
+      const stock = await StockService.getStockByItemId(item.itemId);
+      if (!stock) {
+        console.error(`[ITEMS VALIDATION FAILED] Item ${i + 1} (itemId: ${item.itemId}) not found in stock`);
+        throw new AppError(`Item with ID ${item.itemId} not found in stock`, 400);
+      }
+      code = stock?.itemId;
+      console.log(`  Item ${i + 1} ✓ Found in stock`);
+    }
+
+    const processedItems = calculateItems(items);
+    console.log("[ITEMS PROCESSING] Calculated items:", JSON.stringify(processedItems, null, 2));
+    
+    const calculatedTotal = processedItems.reduce(
+      (sum, i) => sum + i.lineTotal,
+      0
+    );
+    console.log(`[TOTALS] Calculated total: ${calculatedTotal}`);
+
+    // FIX: Use incoming totalAmount if provided, else calculated (adjust if you always want calculated)
+    const finalTotalAmount = totalAmount !== undefined ? totalAmount : calculatedTotal;
+    console.log("Service: Final totalAmount (incoming/calculated):", finalTotalAmount);  // TEMP LOG
+
+    const transactionData = {
+      transactionNo: finalTransactionNo,
+      orderNumber: finalOrderNumber,
+      type,
+      partyId,
+      partyType: partyType === "Vendor" ? "Vendor" : "Customer",
+      partyTypeRef: partyType === "Vendor" ? "Vendor" : "Customer",
+      items: processedItems,
+      totalAmount: finalTotalAmount,
+      vendorReference,
+      status: status || "DRAFT",
+      createdBy,
+      numberManual,  // NEW: store the flag so approval logic can check it
+      date: new Date(date || new Date()),
+      deliveryDate: new Date(deliveryDate || new Date()),
+      terms: terms || "",
+      notes: notes || "",
+      priority: priority || "Medium",
+      // Sales invoice specific fields (map aliases)
+      docno: (docno ?? docNo) || null,
+      lpono: (lpono ?? refNo ?? lpoNo) || null,
+      discount: Number(discount ?? 0),
+    };
+
+    console.log("═══════════════════════════════════════════════════════");
+    console.log("[TRANSACTION CREATE] Final data before save:");
+    console.log(JSON.stringify(transactionData, null, 2));
+    console.log("═══════════════════════════════════════════════════════");
+
+    let newTransaction;
+    try {
+      [newTransaction] = await Transaction.create([transactionData], {
+        session,
+      });
+      console.log("[TRANSACTION CREATE] ✓ Success - Created transaction:", newTransaction._id);
+    } catch (createError) {
+      console.error("═══════════════════════════════════════════════════════");
+      console.error("[TRANSACTION CREATE] ❌ Failed to create transaction");
+      console.error("Error name:", createError.name);
+      console.error("Error message:", createError.message);
+      if (createError.errors) {
+        console.error("Validation errors:", JSON.stringify(createError.errors, null, 2));
+      }
+      console.error("Full error:", createError);
+      console.error("═══════════════════════════════════════════════════════");
+      throw createError;
+    }
+
+    // Create StockPurchaseLog for purchase orders (unchanged, but use finalTransactionNo)
+    if (type === "purchase_order") {
+      const purchaseLogData = {
+        transactionNo: newTransaction.transactionNo,  // Will now match incoming if provided
+        type: "purchase_order",
+>>>>>>> Stashed changes
         partyId,
         partyType,
         vendorReference,
@@ -256,6 +505,13 @@ class TransactionService {
       if (this.isProcessed(transaction.status))
         throw new AppError("Cannot edit processed transactions", 400);
 
+      // Map frontend aliases for doc/lpo numbers on update
+      if (data) {
+        const { docno, lpono, docNo, refNo, lpoNo } = data;
+        if (docNo && !docno) data.docno = docNo;
+        if ((refNo || lpoNo) && !lpono) data.lpono = refNo ?? lpoNo;
+      }
+
       if (data.items) {
         // Recalculate items with updated data
         data.items = calculateItems(data.items);
@@ -322,13 +578,66 @@ class TransactionService {
   // Process Transaction (approve/reject/cancel)
   static processTransaction = withTransactionSession(
     async (id, action, createdBy, session) => {
+      const log = logger.child({ svc: "TransactionService", method: "processTransaction", id, action });
+      log.info("Begin processing transaction");
       const transaction = await Transaction.findById(id).session(session);
       if (!transaction) throw new AppError("Transaction not found", 404);
 
+      log.info("Fetched transaction", {
+        type: transaction.type,
+        status: transaction.status,
+        numberManual: transaction.numberManual,
+        orderNumber: transaction.orderNumber,
+        invoiceNumber: transaction.invoiceNumber,
+        transactionNo: transaction.transactionNo,
+      });
+
       this.validateAction(transaction.type, action, transaction.status);
 
+<<<<<<< Updated upstream
       // Store old status for reversal detection
       const wasApproved = transaction.status === "APPROVED";
+=======
+      if (action === "approve") {
+        // Sales Order invoice allocation logic
+        if (transaction.type === "sales_order") {
+          log.info("Sales order approval: numbering before", {
+            numberManual: transaction.numberManual,
+            orderNumber: transaction.orderNumber,
+            invoiceNumber: transaction.invoiceNumber,
+            transactionNo: transaction.transactionNo,
+          });
+          if (transaction.numberManual) {
+            // MANUAL SO: invoiceNumber must equal the manual orderNumber.
+            transaction.invoiceNumber = transaction.orderNumber;
+            // Also set transactionNo same as orderNumber as per requirement
+            transaction.transactionNo = transaction.orderNumber;
+            console.log(`[INVOICE] Manual SO approval: invoiceNumber=${transaction.invoiceNumber} (from orderNumber)`);
+          } else {
+            // AUTO SO: invoiceNumber should be NNNNN derived from SOYYYYMM-NNNNN (orderNumber)
+            // Only allocate if not already allocated (idempotent)
+            if (!transaction.invoiceNumber || transaction.invoiceNumber === null) {
+              transaction.invoiceNumber = await getNextInvoiceNumber("sales_order", { orderNumber: transaction.orderNumber });
+              console.log(`[INVOICE] Auto SO approval: allocated invoiceNumber=${transaction.invoiceNumber}`);
+            } else {
+              console.log(`[INVOICE] Auto SO approval: invoiceNumber already set to ${transaction.invoiceNumber}`);
+            }
+            // Align transactionNo with invoiceNumber for approved SO
+            transaction.transactionNo = transaction.invoiceNumber;
+          }
+          log.info("Sales order approval: numbering after", {
+            numberManual: transaction.numberManual,
+            orderNumber: transaction.orderNumber,
+            invoiceNumber: transaction.invoiceNumber,
+            transactionNo: transaction.transactionNo,
+          });
+        }
+
+        // Process stock updates for all types
+        log.info("Processing stock movements...");
+        await this.processTransactionStock(id, transaction, createdBy, session);
+        log.info("Stock movements processed");
+>>>>>>> Stashed changes
 
       if (action === "approve") {
         await this.processTransactionStock(id, transaction, createdBy, session);
@@ -346,11 +655,24 @@ class TransactionService {
             purchaseLog.status = "APPROVED";
             await purchaseLog.save({ session });
           }
+<<<<<<< Updated upstream
+=======
+          purchaseLog.status = "APPROVED";
+          await purchaseLog.save({ session });
+>>>>>>> Stashed changes
         }
       }
 
+<<<<<<< Updated upstream
       // Handle rejection/cancellation
       if (action === "reject" && transaction.type === "purchase_order") {
+=======
+        // Create VAT report items for approved transactions with VAT
+        log.info("Creating VAT report items (if any)...");
+        await this.createVATReportItems(transaction, createdBy, session);
+        log.info("VAT report items step completed");
+      } else if (action === "reject" && transaction.type === "purchase_order") {
+>>>>>>> Stashed changes
         const purchaseLog = await StockPurchaseLog.findOne({
           transactionNo: transaction.transactionNo,
         }).session(session);
@@ -371,6 +693,7 @@ class TransactionService {
           await this.reversePartyBalanceAndLog(transaction, createdBy, session); // REVERSE financials
         }
 
+<<<<<<< Updated upstream
         if (transaction.type === "purchase_order") {
           const purchaseLog = await StockPurchaseLog.findOne({
             transactionNo: transaction.transactionNo,
@@ -386,6 +709,18 @@ class TransactionService {
       this.updateTransactionStatus(transaction, action);
       await transaction.save({ session });
 
+=======
+      log.info("Final transaction before save", {
+        status: transaction.status,
+        invoiceGenerated: transaction.invoiceGenerated,
+        grnGenerated: transaction.grnGenerated,
+        orderNumber: transaction.orderNumber,
+        invoiceNumber: transaction.invoiceNumber,
+        transactionNo: transaction.transactionNo,
+      });
+      await transaction.save({ session });
+      log.info("Transaction saved successfully");
+>>>>>>> Stashed changes
       return transaction;
     }
   );
@@ -493,6 +828,7 @@ const logAmount = balanceEffect;
 
   // Helper to create VAT report items for approved transactions
   static async createVATReportItems(transaction, createdBy, session) {
+<<<<<<< Updated upstream
     const {
       type,
       _id: transactionId,
@@ -502,6 +838,10 @@ const logAmount = balanceEffect;
       date,
       items,
     } = transaction;
+=======
+    const { type, _id: transactionId, partyId, partyType, date, items } = transaction;
+    const transactionNo = transaction.transactionNo || transaction.invoiceNumber || transaction.orderNumber || null;
+>>>>>>> Stashed changes
 
     // Determine if it's output (sales) or input (purchase) VAT
     const isOutputVAT = ["sales_order", "purchase_return"].includes(type);
@@ -748,6 +1088,7 @@ const logAmount = balanceEffect;
           $unwind: { path: "$items", preserveNullAndEmptyArrays: true },
         },
 
+<<<<<<< Updated upstream
         // ---- 6. Lookup Stock + nested UOM ---- (unchanged)
         {
           $lookup: {
@@ -778,6 +1119,51 @@ const logAmount = balanceEffect;
           $set: {
             "items.stockDetails": { $arrayElemAt: ["$items.stockDetails", 0] },
           },
+=======
+      // ---- 7. Group back the document ---- (unchanged, but now partyName is correct)
+      {
+        $group: {
+          _id: "$_id",
+          transactionNo: { $first: "$transactionNo" },
+          orderNumber: { $first: "$orderNumber" },
+          type: { $first: "$type" },
+          partyId: { $first: "$partyId" },
+          partyType: { $first: "$partyType" },
+          partyTypeRef: { $first: "$partyTypeRef" },
+          vendorReference: { $first: "$vendorReference" },
+          date: { $first: "$date" },
+          deliveryDate: { $first: "$deliveryDate" },
+          returnDate: { $first: "$returnDate" },
+          expectedDispatch: { $first: "$expectedDispatch" },
+          status: { $first: "$status" },
+          totalAmount: { $first: "$totalAmount" },
+          // Ensure sales-order fields are included in list output
+          docno: { $first: "$docno" },
+          lpono: { $first: "$lpono" },
+          discount: { $first: "$discount" },
+          paidAmount: { $first: "$paidAmount" },
+          outstandingAmount: { $first: "$outstandingAmount" },
+          items: { $push: "$items" },
+          terms: { $first: "$terms" },
+          notes: { $first: "$notes" },
+          quoteRef: { $first: "$quoteRef" },
+          linkedRef: { $first: "$linkedRef" },
+          creditNoteIssued: { $first: "$creditNoteIssued" },
+          createdBy: { $first: "$createdBy" },
+          createdAt: { $first: "$createdAt" },
+          updatedAt: { $first: "$updatedAt" },
+          priority: { $first: "$priority" },
+          grnGenerated: { $first: "$grnGenerated" },
+          invoiceGenerated: { $first: "$invoiceGenerated" },
+
+          // keep the raw lookup arrays
+          customerData: { $first: "$customerData" },
+          vendorData: { $first: "$vendorData" },
+
+          // our new fields
+          party: { $first: "$party" },
+          partyName: { $first: "$partyName" },
+>>>>>>> Stashed changes
         },
 
         // ---- 7. Group back the document ---- (unchanged, but now partyName is correct)
@@ -819,6 +1205,7 @@ const logAmount = balanceEffect;
             customerData: { $first: "$customerData" },
             vendorData: { $first: "$vendorData" },
 
+<<<<<<< Updated upstream
             // our new fields
             party: { $first: "$party" },
             partyName: { $first: "$partyName" },
@@ -846,6 +1233,21 @@ const logAmount = balanceEffect;
           stockDetails: i.stockDetails || null,
         })),
       }));
+=======
+    // ---- Final shape (optional safety) ---- (updated fallback for consistency)
+    const result = transactions.map((t) => ({
+      ...t,
+      orderNumber: t.orderNumber || null,
+      partyName: t.partyName || "Unknown Party",  // Now rarely triggers
+      party: t.party || null,
+      customerData: t.customerData?.length ? t.customerData[0] : null,
+      vendorData: t.vendorData?.length ? t.vendorData[0] : null,
+      items: t.items.map((i) => ({
+        ...i,
+        stockDetails: i.stockDetails || null,
+      })),
+    }));
+>>>>>>> Stashed changes
       // console.log(result);
       return {
         transactions: result,
@@ -868,7 +1270,8 @@ const logAmount = balanceEffect;
     createdBy,
     session
   ) {
-    const { type, items, transactionNo } = transaction;
+    const { type, items } = transaction;
+    const referenceNumber = transaction.transactionNo || transaction.invoiceNumber || transaction.orderNumber || null;
     const stockUpdates = [];
 
     for (const item of items) {
@@ -911,7 +1314,7 @@ const logAmount = balanceEffect;
           eventType: this.getEventType(type),
           referenceType: "Transaction",
           referenceId: transactionId,
-          referenceNumber: transactionNo,
+          referenceNumber,
           unitCost: unitPrice,
           totalValue: Math.abs(quantityChange) * unitPrice,
           notes: `${this.getEventType(type)} - ${item.description}`,
@@ -1056,6 +1459,39 @@ const logAmount = balanceEffect;
       status
     );
   }
+
+  // Get next transaction number (for frontend pre-generation of manual numbers)
+  // If preview === true, do NOT increment the persistent counter; just read current and compute next
+  static async getNextTransactionNumber(type, preview = false) {
+    const map = {
+      purchase_order: { seqType: "purchase_order", prefix: "PO" },
+      sales_order: { seqType: "sales_order", prefix: "SO" },
+    }[type];
+    if (!map) throw new AppError(`Sequence not configured for type ${type}`, 400);
+
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = String(now.getMonth() + 1).padStart(2, "0");
+    const yyyymm = `${y}${m}`;
+    const prefix = `${map.prefix}${yyyymm}-`;
+
+    if (preview) {
+      // Read-only: fetch current counter and compute next without increment
+      const seqDoc = await Sequence.findOne({ type: map.seqType, year: String(y) });
+      const current = (seqDoc && typeof seqDoc.current === 'number') ? seqDoc.current : 0;
+      const nextNum = current + 1;
+      return `${prefix}${String(nextNum).padStart(5, '0')}`;
+    }
+
+    // Non-preview: atomically increment and return the assigned value
+    return getNextOrderNumber(type, null);
+  }
 }
 
 module.exports = TransactionService;
+<<<<<<< Updated upstream
+=======
+// Export helpers for unit tests and external usage
+module.exports.getNextOrderNumber = getNextOrderNumber;
+module.exports.getNextInvoiceNumber = getNextInvoiceNumber;
+>>>>>>> Stashed changes

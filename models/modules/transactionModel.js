@@ -23,7 +23,9 @@ const itemSchema = new mongoose.Schema({
 });
 
 const transactionSchema = new mongoose.Schema({
-  transactionNo: { type: String, unique: true, required: true, trim: true },
+  // For orders: transactionNo may be null while in DRAFT, set on approval
+  transactionNo: { type: String, default: null, trim: true },
+  orderNumber: { type: String, default: null, trim: true },
   // Sales invoice specific fields
   docno: { type: String, default: null, trim: true },
   lpono: { type: String, default: null, trim: true },
@@ -81,6 +83,10 @@ const transactionSchema = new mongoose.Schema({
   },
   grnGenerated: { type: Boolean, default: false },
   invoiceGenerated: { type: Boolean, default: false },
+  // For Sales Invoices: 5-digit invoice number allocated on approval
+  invoiceNumber: { type: String, default: null, trim: true },
+  // Flag: true means user entered number manually (do NOT update sequence)
+  numberManual: { type: Boolean, default: false },
 });
 
 // Pre-save middleware
@@ -113,5 +119,14 @@ transactionSchema.pre(["updateOne", "findOneAndUpdate"], function (next) {
 transactionSchema.index({ partyId: 1, partyType: 1 });
 transactionSchema.index({ status: 1 });
 transactionSchema.index({ date: -1 });
+// Unique only when non-null using partial filter; allow multiple nulls in DRAFT
+transactionSchema.index(
+  { transactionNo: 1 },
+  { unique: true, partialFilterExpression: { transactionNo: { $type: "string" } } }
+);
+transactionSchema.index(
+  { orderNumber: 1 },
+  { unique: true, partialFilterExpression: { orderNumber: { $type: "string" } } }
+);
 
 module.exports = mongoose.model("Transaction", transactionSchema);
